@@ -482,7 +482,7 @@ const App = () => {
 
   // Function to handle explicit saving
   const handleSaveDocument = () => {
-    if (!currentDocId || isFromLocalStorage) return;
+    if (!openedFileName || editLocked) return;
 
     // Check if we can add a new document
     if (Object.keys(documents).length >= MAX_DOCS) {
@@ -1334,24 +1334,16 @@ const App = () => {
                       <button
                         onClick={() => handleSaveDocument()}
                         className={`p-2 text-white bg-[#3b3b99] rounded hover:bg-[#4c4cbb]${
-                          !currentDocId ||
-                          isFromLocalStorage ||
-                          editLocked ||
-                          !openedFileName
+                          !openedFileName || editLocked
                             ? " opacity-50 cursor-not-allowed"
                             : ""
                         }`}
-                        disabled={
-                          !currentDocId ||
-                          isFromLocalStorage ||
-                          editLocked ||
-                          !openedFileName
-                        }
+                        disabled={!openedFileName || editLocked}
                         title={
                           !openedFileName
                             ? "No file opened"
-                            : isFromLocalStorage
-                            ? "Document already saved"
+                            : editLocked
+                            ? "Storage limit reached"
                             : "Save Document"
                         }
                       >
