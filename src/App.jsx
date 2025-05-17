@@ -6,6 +6,7 @@ import "highlight.js/styles/atom-one-dark.css";
 import "draft-js/dist/Draft.css";
 import jsPDF from "jspdf";
 import html2canvas from "html2canvas";
+import ReactDOM from "react-dom/client";
 
 // Polyfill for global to fix "global is not defined" error
 if (typeof global === "undefined") {
@@ -309,6 +310,11 @@ const ICONS = {
   ),
 };
 
+// Add this function before the App component
+const isFileAlreadySaved = (fileName, documents) => {
+  return Object.values(documents).some((doc) => doc.name === fileName);
+};
+
 const App = () => {
   const [editorState, setEditorState] = useState(EditorState.createEmpty());
   const editorRef = useRef(null);
@@ -482,7 +488,12 @@ const App = () => {
 
   // Function to handle explicit saving
   const handleSaveDocument = () => {
-    if (!openedFileName || editLocked) return;
+    if (
+      !openedFileName ||
+      editLocked ||
+      isFileAlreadySaved(openedFileName, documents)
+    )
+      return;
 
     // Check if we can add a new document
     if (Object.keys(documents).length >= MAX_DOCS) {
@@ -619,6 +630,25 @@ const App = () => {
           // Adjust subsequent insertions' positions
           if (blockKey === startKey)
             blockDelta -= existingHeadingMatch[0].length;
+        }
+
+        // Check if the block already starts with a list marker
+        const existingListMatch = blockText.match(/^([-*+]|\d+\.)\s/);
+        if (existingListMatch) {
+          // If it already has a list marker, remove the old one before inserting the new one
+          const rangeToRemove = selection.merge({
+            anchorKey: blockKey,
+            anchorOffset: 0,
+            focusKey: blockKey,
+            focusOffset: existingListMatch[0].length,
+          });
+          newContentState = Modifier.replaceText(
+            newContentState,
+            rangeToRemove,
+            ""
+          );
+          // Adjust subsequent insertions' positions
+          if (blockKey === startKey) blockDelta -= existingListMatch[0].length;
         }
 
         // Check if the block already starts with the *specific* requested syntax
@@ -940,82 +970,223 @@ const App = () => {
     const content = editorState.getCurrentContent().getPlainText();
     if (!content.trim()) return; // Don't export if empty
 
-    // Create a temporary hidden div to render the full markdown content for capture
+    // Create a temporary div for rendering markdown
     const tempDiv = document.createElement("div");
     tempDiv.style.position = "absolute";
+    tempDiv.style.left = "-9999px";
     tempDiv.style.top = "-9999px";
-    tempDiv.style.width = "calc(2 * 8.5in)"; // Approximate a printable width (e.g., twice A4 width in inches, converted to px)
-    tempDiv.style.padding = "1in"; // Add some padding
-    tempDiv.style.background = "#fff"; // Ensure white background
-    tempDiv.style.color = "#000"; // Ensure black text
+    tempDiv.style.width = "800px"; // Fixed width for consistent rendering
+    tempDiv.style.padding = "40px";
+    tempDiv.style.background = "#ffffff";
+    tempDiv.style.color = "#000000";
+    tempDiv.style.fontFamily = "Arial, sans-serif";
+    tempDiv.style.fontSize = "14px";
+    tempDiv.style.lineHeight = "1.6";
     document.body.appendChild(tempDiv);
 
-    // Render the markdown to the temporary div using ReactMarkdown (temporarily)
-    // This is a bit tricky with React/ReactDOM. A simpler approach is to directly convert markdown to HTML if ReactMarkdown provides a utility, or use a dedicated markdown-to-html lib, but since ReactMarkdown is already used for rendering, let's try to leverage it or simulate its output structure.
-    // For simplicity and direct fix, let's simulate rendering or use a simpler library if available. However, directly rendering React components outside the app root is complex.
-    // A more practical approach given the current structure is to let ReactMarkdown render into a temporary div attached to the main app's render tree if possible, or use a separate headless markdown-to-html conversion.
-
-    // Let's try to leverage the existing ReactMarkdown by rendering into the temp div.
-    // This requires a bit of ReactDOM work or a different rendering approach.
-    // A simpler, more direct approach for fixing the *capture* part is to ensure html2canvas captures the full scrollable height.
-
-    // Let's revert to capturing the previewDiv but ensuring it captures the full height by temporarily adjusting styles if needed, or relying on html2canvas's scroll handling which might be improved in newer versions.
-    // Re-evaluating: The issue is likely html2canvas not capturing the scroll. The temporary div approach with full content is robust.
-    // To render ReactMarkdown into a temporary div, we can't just append HTML strings because ReactMarkdown is a component.
-    // We could use ReactDOM.render into the tempDiv, but that's for older React versions, or create a portal/separate root, which adds complexity.
-
-    // Alternative robust approach without complex React rendering: use a simple markdown-it instance to convert markdown to HTML in the background, then feed that HTML to html2canvas.
-
-    // Let's stick to the initial plan of capturing the previewDiv but trying to ensure it captures full height. This is simpler if we can make html2canvas work.
-    // A common way to force full capture is to temporarily expand the scrollable element's height before capture and revert it.
-
-    const previewDiv = previewRef.current;
-    if (!previewDiv) return;
-
-    const originalHeight = previewDiv.style.height;
-    const originalOverflow = previewDiv.style.overflow;
-
-    // Temporarily expand height and allow overflow to ensure html2canvas captures everything
-    previewDiv.style.height = "auto";
-    previewDiv.style.overflow = "visible"; // Or just remove overflow to let content dictate height
-    previewDiv.style.overflowY = "visible";
-    previewDiv.style.overflowX = "visible";
-
-    const canvas = await html2canvas(previewDiv, {
-      backgroundColor: "#fff",
-      scale: 2,
-    });
-
-    // Revert styles
-    previewDiv.style.height = originalHeight;
-    previewDiv.style.overflow = originalOverflow;
-    previewDiv.style.overflowY = "scroll"; // Or whatever your original overflow-y was
-    previewDiv.style.overflowX = "hidden"; // Or whatever your original overflow-x was
-
-    const imgData = canvas.toDataURL("image/png");
-    const pdf = new jsPDF({
-      orientation: "portrait",
-      unit: "pt",
-      format: "a4",
-    });
-    const pageWidth = pdf.internal.pageSize.getWidth();
-    const pageHeight = pdf.internal.pageSize.getHeight();
-    const imgProps = pdf.getImageProperties(imgData);
-
-    let pdfHeight = (imgProps.height * pageWidth) / imgProps.width;
-    let position = 0;
-
-    // Add image to PDF, handle pagination if content is taller than a page
-    while (position < pdfHeight) {
-      pdf.addImage(imgData, "PNG", 0, position, pageWidth, pdfHeight);
-      position -= pageHeight; // Move position up by page height for the next page
-      if (position < pdfHeight) {
-        // If there's still content, add a new page
-        pdf.addPage();
+    // Add styles for markdown content
+    const styleElement = document.createElement("style");
+    styleElement.textContent = `
+      .markdown-preview h1 {
+        font-size: 2em;
+        font-weight: bold;
+        margin-bottom: 0.5em;
       }
-    }
+      .markdown-preview h2 {
+        font-size: 1.5em;
+        font-weight: bold;
+        margin-bottom: 0.5em;
+      }
+      .markdown-preview h3 {
+        font-size: 1.2em;
+        font-weight: bold;
+        margin-bottom: 0.5em;
+      }
+      .markdown-preview h4 {
+        font-size: 1em;
+        font-weight: bold;
+        margin-bottom: 0.5em;
+      }
+      .markdown-preview h5 {
+        font-size: 0.8em;
+        font-weight: bold;
+        margin-bottom: 0.5em;
+      }
+      .markdown-preview h6 {
+        font-size: 0.7em;
+        font-weight: bold;
+        margin-bottom: 0.5em;
+      }
+      .markdown-preview p {
+        margin-bottom: 1em;
+      }
+      .markdown-preview ul {
+        list-style-type: disc;
+        margin-left: 1.5em;
+        margin-bottom: 1em;
+      }
+      .markdown-preview ol {
+        list-style-type: decimal;
+        margin-left: 1.5em;
+        margin-bottom: 1em;
+      }
+      .markdown-preview li {
+        margin-bottom: 0.5em;
+      }
+      .markdown-preview li > ul,
+      .markdown-preview li > ol {
+        margin-top: 0.5em;
+      }
+      .markdown-preview pre {
+        background-color: #f6f8fa;
+        border-radius: 3px;
+        padding: 16px;
+        margin-bottom: 1em;
+        overflow-x: auto;
+      }
+      .markdown-preview code {
+        font-family: 'Courier New', Courier, monospace;
+        background-color: #f6f8fa;
+        padding: 0.2em 0.4em;
+        border-radius: 3px;
+      }
+      .markdown-preview blockquote {
+        border-left: 4px solid #dfe2e5;
+        padding-left: 16px;
+        margin-left: 0;
+        margin-bottom: 1em;
+        color: #6a737d;
+      }
+      .markdown-preview a {
+        color: #0366d6;
+        text-decoration: none;
+      }
+      .markdown-preview a:hover {
+        text-decoration: underline;
+      }
+      .markdown-preview img {
+        max-width: 100%;
+        height: auto;
+      }
+      .markdown-preview table {
+        border-collapse: collapse;
+        width: 100%;
+        margin-bottom: 1em;
+      }
+      .markdown-preview th,
+      .markdown-preview td {
+        border: 1px solid #dfe2e5;
+        padding: 6px 13px;
+      }
+      .markdown-preview th {
+        background-color: #f6f8fa;
+      }
+    `;
+    tempDiv.appendChild(styleElement);
 
-    pdf.save((openedFileName || "markdown-preview") + ".pdf");
+    // Render markdown content
+    const markdownContent = (
+      <div className="markdown-preview">
+        <ReactMarkdown
+          components={{
+            code({ node, inline, className, children, ...props }) {
+              const match = /language-(\w+)/.exec(className || "");
+              const text = String(children).replace(/\n$/, "");
+              if (!inline && match) {
+                let highlighted = null;
+                try {
+                  highlighted = hljs.highlight(text, {
+                    language: match[1],
+                  }).value;
+                } catch (e) {
+                  highlighted = null;
+                }
+                return highlighted ? (
+                  <pre>
+                    <code
+                      dangerouslySetInnerHTML={{ __html: highlighted }}
+                      {...props}
+                    />
+                  </pre>
+                ) : (
+                  <pre>
+                    <code className={className} {...props}>
+                      {text}
+                    </code>
+                  </pre>
+                );
+              } else {
+                return (
+                  <code className={className} {...props}>
+                    {children}
+                  </code>
+                );
+              }
+            },
+            ul: ({ children }) => <ul className="list-disc">{children}</ul>,
+            ol: ({ children }) => <ol className="list-decimal">{children}</ol>,
+            li: ({ children }) => <li className="ml-4">{children}</li>,
+          }}
+        >
+          {content}
+        </ReactMarkdown>
+      </div>
+    );
+
+    // Use ReactDOM to render the markdown content
+    const root = ReactDOM.createRoot(tempDiv);
+    root.render(markdownContent);
+
+    // Wait for content to render
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    try {
+      // Capture the rendered content
+      const canvas = await html2canvas(tempDiv, {
+        scale: 2,
+        useCORS: true,
+        logging: false,
+        backgroundColor: "#ffffff",
+        windowWidth: 800,
+        windowHeight: tempDiv.scrollHeight,
+      });
+
+      // Create PDF
+      const pdf = new jsPDF({
+        orientation: "portrait",
+        unit: "pt",
+        format: "a4",
+      });
+
+      const imgWidth = pdf.internal.pageSize.getWidth();
+      const imgHeight = (canvas.height * imgWidth) / canvas.width;
+      let heightLeft = imgHeight;
+      let position = 0;
+      let pageNumber = 1;
+
+      // Add first page
+      pdf.addImage(canvas, "PNG", 0, position, imgWidth, imgHeight);
+      heightLeft -= pdf.internal.pageSize.getHeight();
+
+      // Add subsequent pages if content is longer than one page
+      while (heightLeft > 0) {
+        position = -pdf.internal.pageSize.getHeight() * pageNumber;
+        pdf.addPage();
+        pdf.addImage(canvas, "PNG", 0, position, imgWidth, imgHeight);
+        heightLeft -= pdf.internal.pageSize.getHeight();
+        pageNumber++;
+      }
+
+      // Save the PDF
+      pdf.save((openedFileName || "markdown-document") + ".pdf");
+    } catch (error) {
+      console.error("Error generating PDF:", error);
+      alert("Error generating PDF. Please try again.");
+    } finally {
+      // Clean up
+      root.unmount();
+      document.body.removeChild(tempDiv);
+    }
   };
 
   return (
@@ -1334,16 +1505,24 @@ const App = () => {
                       <button
                         onClick={() => handleSaveDocument()}
                         className={`p-2 text-white bg-[#3b3b99] rounded hover:bg-[#4c4cbb]${
-                          !openedFileName || editLocked
+                          !openedFileName ||
+                          editLocked ||
+                          isFileAlreadySaved(openedFileName, documents)
                             ? " opacity-50 cursor-not-allowed"
                             : ""
                         }`}
-                        disabled={!openedFileName || editLocked}
+                        disabled={
+                          !openedFileName ||
+                          editLocked ||
+                          isFileAlreadySaved(openedFileName, documents)
+                        }
                         title={
                           !openedFileName
                             ? "No file opened"
                             : editLocked
                             ? "Storage limit reached"
+                            : isFileAlreadySaved(openedFileName, documents)
+                            ? "File already saved"
                             : "Save Document"
                         }
                       >
@@ -1658,7 +1837,24 @@ const App = () => {
                     font-weight: bold;
                   }
                   .markdown-preview p {
-                    margin-bottom: 1em; /* Add some spacing below paragraphs */
+                    margin-bottom: 1em;
+                  }
+                  .markdown-preview ul {
+                    list-style-type: disc;
+                    margin-left: 1.5em;
+                    margin-bottom: 1em;
+                  }
+                  .markdown-preview ol {
+                    list-style-type: decimal;
+                    margin-left: 1.5em;
+                    margin-bottom: 1em;
+                  }
+                  .markdown-preview li {
+                    margin-bottom: 0.5em;
+                  }
+                  .markdown-preview li > ul,
+                  .markdown-preview li > ol {
+                    margin-top: 0.5em;
                   }
                 `}</style>
                 <ReactMarkdown
@@ -1697,6 +1893,14 @@ const App = () => {
                         );
                       }
                     },
+                    // Add custom list rendering
+                    ul: ({ children }) => (
+                      <ul className="list-disc">{children}</ul>
+                    ),
+                    ol: ({ children }) => (
+                      <ol className="list-decimal">{children}</ol>
+                    ),
+                    li: ({ children }) => <li className="ml-4">{children}</li>,
                   }}
                 >
                   {editorState.getCurrentContent().getPlainText()}
